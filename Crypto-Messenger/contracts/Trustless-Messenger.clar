@@ -11,12 +11,19 @@
 (define-constant ERROR_USER_NOT_IN_BLOCKLIST (err u205))
 (define-constant ERROR_CANNOT_PERFORM_ACTION_ON_SELF (err u206))
 (define-constant ERROR_INVALID_PAGINATION_PARAMETERS (err u207))
+(define-constant ERROR_INVALID_INPUT_PARAMETERS (err u208))
+(define-constant ERROR_INVALID_THREAD_ID (err u209))
+(define-constant ERROR_INVALID_TRUST_LEVEL (err u210))
+(define-constant ERROR_INVALID_PRIVACY_LEVEL (err u211))
 
 ;; SYSTEM CONSTANTS
 (define-constant MAXIMUM_MESSAGE_CHARACTER_LIMIT u1000)
 (define-constant MAXIMUM_USERNAME_CHARACTER_LIMIT u50)
 (define-constant MAXIMUM_NICKNAME_CHARACTER_LIMIT u50)
 (define-constant MAXIMUM_PUBLIC_KEY_CHARACTER_LIMIT u100)
+(define-constant MAXIMUM_BLOCKING_REASON_LENGTH u100)
+(define-constant MAXIMUM_TRUST_LEVEL u10)
+(define-constant MAXIMUM_PRIVACY_LEVEL u10)
 (define-constant PROTOCOL_ADMINISTRATOR tx-sender)
 (define-constant INITIAL_COUNTER_VALUE u0)
 
@@ -169,6 +176,45 @@
 
 ;; PRIVATE UTILITY FUNCTIONS
 
+;; Validate public key format and length
+(define-private (validate-public-key (public-key (optional (string-ascii 100))))
+    (match public-key
+        key-value (<= (len key-value) MAXIMUM_PUBLIC_KEY_CHARACTER_LIMIT)
+        true
+    )
+)
+
+;; Validate privacy level is within acceptable range
+(define-private (validate-privacy-level (privacy-level uint))
+    (<= privacy-level MAXIMUM_PRIVACY_LEVEL)
+)
+
+;; Validate trust level is within acceptable range
+(define-private (validate-trust-level (trust-level uint))
+    (<= trust-level MAXIMUM_TRUST_LEVEL)
+)
+
+;; Validate blocking reason length
+(define-private (validate-blocking-reason (reason (string-ascii 100)))
+    (and 
+        (> (len reason) u0)
+        (<= (len reason) MAXIMUM_BLOCKING_REASON_LENGTH)
+    )
+)
+
+;; Validate thread ID exists if provided
+(define-private (validate-thread-id (thread-id (optional uint)))
+    (match thread-id
+        id-value (is-some (map-get? conversation-thread-metadata id-value))
+        true
+    )
+)
+
+;; Validate that contact principal is different from the owner
+(define-private (validate-contact-principal (owner principal) (contact principal))
+    (not (is-eq owner contact))
+)
+
 ;; Update user's message participation statistics
 (define-private (increment-user-message-statistics 
     (participating-user-principal principal) 
@@ -253,7 +299,10 @@
     (user-public-key (optional (string-ascii 100)))
     (privacy-preference-level uint))
     (let ((profile-creator tx-sender))
+        ;; Input validation
         (asserts! (<= (len selected-username) MAXIMUM_USERNAME_CHARACTER_LIMIT) ERROR_MESSAGE_CONTENT_TOO_LARGE)
+        (asserts! (validate-public-key user-public-key) ERROR_INVALID_INPUT_PARAMETERS)
+        (asserts! (validate-privacy-level privacy-preference-level) ERROR_INVALID_PRIVACY_LEVEL)
         (asserts! (var-get protocol-active-status) ERROR_UNAUTHORIZED_ACCESS)
         
         (map-set decentralized-user-registry profile-creator {
@@ -283,6 +332,7 @@
         ;; Comprehensive validation checks
         (asserts! (validate-message-parameters destination-user-principal message-text-payload) 
                   ERROR_INVALID_MESSAGE_TARGET)
+        (asserts! (validate-thread-id thread-continuation-id) ERROR_INVALID_THREAD_ID)
         (asserts! (var-get protocol-active-status) ERROR_UNAUTHORIZED_ACCESS)
 
         ;; Store message with complete metadata
@@ -313,10 +363,12 @@
     (target-user-to-block principal) 
     (blocking-reason (string-ascii 100)))
     (let ((blocking-initiator tx-sender))
+        ;; Input validation
         (asserts! (not (is-eq blocking-initiator target-user-to-block)) 
                   ERROR_CANNOT_PERFORM_ACTION_ON_SELF)
         (asserts! (not (check-user-blocking-status blocking-initiator target-user-to-block)) 
                   ERROR_USER_ALREADY_IN_BLOCKLIST)
+        (asserts! (validate-blocking-reason blocking-reason) ERROR_INVALID_INPUT_PARAMETERS)
         (asserts! (var-get protocol-active-status) ERROR_UNAUTHORIZED_ACCESS)
         
         (map-set user-communication-restrictions 
@@ -350,8 +402,12 @@
     (assigned-nickname (string-ascii 50))
     (trust-level uint))
     (let ((contact-manager tx-sender))
+        ;; Input validation
         (asserts! (<= (len assigned-nickname) MAXIMUM_NICKNAME_CHARACTER_LIMIT) 
                   ERROR_MESSAGE_CONTENT_TOO_LARGE)
+        (asserts! (validate-contact-principal contact-manager new-contact-principal) 
+                  ERROR_CANNOT_PERFORM_ACTION_ON_SELF)
+        (asserts! (validate-trust-level trust-level) ERROR_INVALID_TRUST_LEVEL)
         (asserts! (var-get protocol-active-status) ERROR_UNAUTHORIZED_ACCESS)
         
         (map-set personal-contact-directory 
@@ -370,6 +426,9 @@
 ;; Remove contact from personal directory
 (define-public (remove-contact-from-directory (contact-to-remove principal))
     (let ((directory-manager tx-sender))
+        ;; Input validation
+        (asserts! (validate-contact-principal directory-manager contact-to-remove) 
+                  ERROR_CANNOT_PERFORM_ACTION_ON_SELF)
         (asserts! (var-get protocol-active-status) ERROR_UNAUTHORIZED_ACCESS)
         
         (map-delete personal-contact-directory 
@@ -385,6 +444,8 @@
         (thread-creator tx-sender)
         (new-thread-id (+ (var-get global-message-sequence-number) u1000))
     )
+        ;; Input validation
+        (asserts! (> (len thread-participants-list) u0) ERROR_INVALID_INPUT_PARAMETERS)
         (asserts! (var-get protocol-active-status) ERROR_UNAUTHORIZED_ACCESS)
         
         (map-set conversation-thread-metadata new-thread-id {
